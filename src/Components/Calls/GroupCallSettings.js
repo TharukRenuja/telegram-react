@@ -212,7 +212,7 @@ class GroupCallSettings extends React.Component {
         const telegramUrlOption = OptionStore.get('t_me_url');
         const usernameLink = telegramUrlOption ? telegramUrlOption.value : 'https://telegram.org/';
 
-        copy(usernameLink + username);
+        copy(usernameLink + username + '?voicechat');
         showSnackbar(t('LinkCopied'), closeSnackbar => snackKey => {
             return (
                 <IconButton
