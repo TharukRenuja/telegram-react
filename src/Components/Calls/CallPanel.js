@@ -22,6 +22,8 @@ import GroupCallSettings from './GroupCallSettings';
 import MenuIcon from '../../Assets/Icons/More';
 import MicIcon from '../../Assets/Icons/Mic';
 import MicOffIcon from '../../Assets/Icons/MicOff';
+import { closeCallPanel } from '../../Actions/Call';
+import { isFirefox } from '../../Calls/P2P/P2PSdpBuilder';
 import { p2pGetCallStatus, p2pIsCallReady } from '../../Calls/Utils';
 import { getUserFullName } from '../../Utils/User';
 import { stopPropagation } from '../../Utils/Message';
@@ -30,11 +32,15 @@ import LStore from '../../Stores/LocalizationStore';
 import UserStore from '../../Stores/UserStore';
 import './CallPanel.css';
 
+const SUPPORTS_ROTATION = true;
+
 class CallPanel extends React.Component {
     constructor(props) {
         super(props);
 
         this.callPanelRef = React.createRef();
+
+        const { callId } = props;
 
         this.state = {
             openSettings: false,
@@ -42,11 +48,9 @@ class CallPanel extends React.Component {
             left: 0,
             top: 0,
             fullScreen: false,
-            audioEnabled: true,
-            videoEnabled: true,
 
-            otherAudioEnabled: true,
-            otherVideoEnabled: true
+            inputMediaState: CallStore.p2pGetMediaState(callId, 'input'),
+            outputMediaState: CallStore.p2pGetMediaState(callId, 'output')
         };
     }
 
@@ -60,7 +64,7 @@ class CallPanel extends React.Component {
         }
 
         CallStore.on('updateCall', this.handleUpdateCall);
-        CallStore.on('clientUpdateCallMediaIsMuted', this.onClientUpdateCallMediaIsMuted);
+        CallStore.on('clientUpdateCallMediaState', this.onClientUpdateCallMediaState);
     }
 
     componentWillUnmount() {
@@ -73,24 +77,20 @@ class CallPanel extends React.Component {
         }
 
         CallStore.off('updateCall', this.handleUpdateCall);
-        CallStore.off('clientUpdateCallMediaIsMuted', this.onClientUpdateCallMediaIsMuted);
+        CallStore.off('clientUpdateCallMediaState', this.onClientUpdateCallMediaState);
     }
 
-    onClientUpdateCallMediaIsMuted = update => {
+    onClientUpdateCallMediaState = update => {
         const { callId: currentCallId } = this.props;
-        const { callId, kind, isMuted } = update;
+        const { callId, mediaState, type } = update;
         if (callId !== currentCallId) return;
 
-        if (kind === 'audio') {
-            this.setState({
-                otherAudioEnabled: !isMuted
-            });
-        } else if (kind === 'video') {
-            this.setState({
-                otherVideoEnabled: !isMuted
-            });
+        if (type === 'input') {
+            this.setState({ inputMediaState: mediaState });
+        } else {
+            this.setState({ outputMediaState: mediaState });
         }
-    }
+    };
 
     handleUpdateCall = update => {
         this.forceUpdate();
@@ -116,12 +116,17 @@ class CallPanel extends React.Component {
     };
 
     handleDiscard = async event => {
-        event.stopPropagation();
+        if (event) {
+            event.stopPropagation();
+        }
 
         const { callId } = this.props;
         if (!callId) return;
 
-        await CallStore.p2pHangUp(callId, true);
+        closeCallPanel();
+        setTimeout(() => {
+            CallStore.p2pHangUp(callId, true);
+        }, 100);
     };
 
     handleOpenSettings = async event => {
@@ -141,9 +146,12 @@ class CallPanel extends React.Component {
     };
 
     handleClose = () => {
-        const { callId } = this.props;
+        if (this.isFullScreen()) {
+            this.exitFullscreen();
+            return;
+        }
 
-        CallStore.p2pHangUp(callId, true);
+        this.handleDiscard(null);
     };
 
     handleShareScreen = () => {
@@ -226,36 +234,26 @@ class CallPanel extends React.Component {
     };
 
     handleAudio = () => {
-        const { audioEnabled } = this.state;
+        const { inputMediaState } = this.state;
+        if (!inputMediaState) return;
 
-        if (audioEnabled) {
-            CallStore.p2pAudioEnabled(false);
-        } else {
-            CallStore.p2pAudioEnabled(true)
-        }
+        const { muted } = inputMediaState;
 
-        this.setState({
-            audioEnabled: !audioEnabled
-        });
+        CallStore.p2pAudioEnabled(muted);
     };
 
     handleVideo = () => {
-        const { videoEnabled } = this.state;
+        const { inputMediaState } = this.state;
+        if (!inputMediaState) return;
 
-        if (videoEnabled) {
-            CallStore.p2pVideoEnabled(false);
-        } else {
-            CallStore.p2pVideoEnabled(true)
-        }
+        const muted = inputMediaState.videoState === 'inactive';
 
-        this.setState({
-            videoEnabled: !videoEnabled
-        });
+        CallStore.p2pVideoEnabled(muted)
     };
 
     render() {
         const { callId, t } = this.props;
-        const { openSettings, anchorEl, fullScreen, audioEnabled, videoEnabled, otherAudioEnabled, otherVideoEnabled } = this.state;
+        const { openSettings, anchorEl, fullScreen, inputMediaState, outputMediaState } = this.state;
         const { currentCall } = CallStore;
 
         const call = CallStore.p2pGet(callId);
@@ -264,6 +262,13 @@ class CallPanel extends React.Component {
         const { user_id: userId, is_outgoing, state } = call;
 
         let screenSharing = currentCall && Boolean(currentCall.screenStream);
+
+        let outputVideoStyle = null;
+        if (SUPPORTS_ROTATION && outputMediaState && isFirefox() && !is_outgoing) {
+            outputVideoStyle = {
+                transform: `rotate(${outputMediaState.videoRotation}deg)`
+            };
+        }
 
         return (
             <div className={classNames('group-call-panel', { 'full-screen': fullScreen })} ref={this.callPanelRef}>
@@ -340,10 +345,10 @@ class CallPanel extends React.Component {
                     </Popover>
                 </div>
                 <div className='call-panel-content scrollbars-hidden' onDoubleClick={this.handleFullScreen}>
-                    <video id='call-output-video' autoPlay={true} muted={true}/>
-                    <video id='call-input-video' autoPlay={true} muted={true}/>
+                    <video id='call-output-video' style={outputVideoStyle} className={outputMediaState && outputMediaState.videoState === 'active' ? 'call-video-active' : 'call-video-inactive'} autoPlay={true} muted={false}/>
+                    <video id='call-input-video' className={inputMediaState && inputMediaState.videoState === 'active' ? 'call-video-active' : 'call-video-inactive'} autoPlay={true} muted={true}/>
                 </div>
-                { !otherAudioEnabled && (
+                { outputMediaState && outputMediaState.muted && (
                     <div className='call-panel-microphone-hint'>
                         <div className='call-panel-microphone-hint-wrapper'>
                             <MicOffIcon/>
@@ -356,10 +361,10 @@ class CallPanel extends React.Component {
                 <div className='group-call-panel-buttons'>
                     <div className='group-call-panel-button'>
                         <div className='group-call-settings-button' onMouseDown={stopPropagation} onClick={this.handleVideo}>
-                            {videoEnabled ? <VideocamIcon/> : <VideocamOffIcon/>}
+                            {inputMediaState && inputMediaState.videoState === 'active' ? <VideocamIcon/> : <VideocamOffIcon/>}
                         </div>
                         <div className='group-call-panel-button-text'>
-                            {videoEnabled ? t('VoipStopVideo') : t('VoipStartVideo')}
+                            {inputMediaState && inputMediaState.videoState === 'active' ? t('VoipStopVideo') : t('VoipStartVideo')}
                         </div>
                     </div>
                     <div className='group-call-panel-button'>
@@ -382,10 +387,10 @@ class CallPanel extends React.Component {
                     )}
                     <div className='group-call-panel-button'>
                         <div className='group-call-settings-button' onMouseDown={stopPropagation} onClick={this.handleAudio}>
-                            {audioEnabled ? <MicIcon/> : <MicOffIcon/>}
+                            {inputMediaState && !inputMediaState.muted ? <MicIcon/> : <MicOffIcon/>}
                         </div>
                         <div className='group-call-panel-button-text'>
-                            {audioEnabled ? t('Mute') : t('Unmute')}
+                            {inputMediaState && !inputMediaState.muted ? t('Mute') : t('Unmute')}
                         </div>
                     </div>
                 </div>
